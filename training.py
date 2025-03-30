@@ -14,50 +14,6 @@ from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
 
-class DynamicWeightedLoss(nn.Module):
-    def __init__(self, initial_alpha=0.1, max_alpha=0.8, epochs=100, schedule='linear'):
-        """
-        参数:
-            initial_alpha: MAE的初始权重
-            max_alpha: MAE的最大权重
-            epochs: 总训练周期数
-            schedule: 权重增长方式 ('linear', 'exp', 'step')
-        """
-        super().__init__()
-        self.initial_alpha = initial_alpha
-        self.max_alpha = max_alpha
-        self.epochs = epochs
-        self.schedule = schedule
-        self.mae_loss = nn.L1Loss()
-        self.mse_loss = nn.MSELoss()
-        
-    def forward(self, pred, target):
-        mae = self.mae_loss(pred, target)
-        mse = self.mse_loss(pred, target)
-        return self.current_alpha * mae + (1 - self.current_alpha) * mse
-    
-    def update_alpha(self, epoch):
-        """根据当前周期更新alpha权重"""
-        if self.schedule == 'linear':
-            # 线性增长
-            self.current_alpha = self.initial_alpha + (self.max_alpha - self.initial_alpha) * (epoch / self.epochs)
-        elif self.schedule == 'exp':
-            # 指数增长
-            self.current_alpha = self.initial_alpha + (self.max_alpha - self.initial_alpha) * (1 - math.exp(-5 * epoch / self.epochs))
-        elif self.schedule == 'step':
-            # 阶梯增长
-            milestone = self.epochs // 3
-            if epoch < milestone:
-                self.current_alpha = self.initial_alpha
-            elif epoch < 2 * milestone:
-                self.current_alpha = (self.initial_alpha + self.max_alpha) / 2
-            else:
-                self.current_alpha = self.max_alpha
-        
-        # 确保alpha在有效范围内
-        self.current_alpha = max(self.initial_alpha, min(self.max_alpha, self.current_alpha))
-        return self.current_alpha
-
 
 def calculate_metrics(output_batch, target_batch):
     """
@@ -176,8 +132,8 @@ def train_model(model, train_loader, test_loader, num_epochs=50, start_epoch=0, 
     model = model.to(device)
     
     # Define loss function and optimizer
-    criterion = nn.MSELoss()
-    # criterion = nn.L1Loss()
+    # criterion = nn.MSELoss()
+    criterion = nn.L1Loss()
     # criterion = DynamicWeightedLoss(initial_alpha=0.1, max_alpha=0.8, epochs=num_epochs)
 
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
