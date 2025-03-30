@@ -3,18 +3,31 @@ import argparse
 import numpy as np
 import torch
 from tqdm import tqdm
+import glob
+from pathlib import Path
 
 # Import the dataset class and model
-from dataset import SinogramDataset
 from model import UNet, LighterUNet
-from torch.utils.data import DataLoader
 
-def load_model(checkpoint_path, device, model_type='unet', attention=True):
+def load_model(checkpoint_path, device, model_type='unet', light=1, attention=True):
+    """
+    Load a trained model from checkpoint
+    
+    Args:
+        checkpoint_path: Path to model checkpoint
+        device: Device to load model on
+        model_type: Type of model ('unet' or 'lighterunet')
+        light: Level of model lightness (for LighterUNet)
+        attention: Whether to use attention in the model
+        
+    Returns:
+        Loaded model
+    """
     # Create the model instance based on model type
     if model_type.lower() == 'unet':
         model = UNet(n_channels=3, n_classes=3, bilinear=False, attention=attention, pretrain=False)
     elif model_type.lower() == 'lighterunet':
-        model = LighterUNet(n_channels=3, n_classes=3, bilinear=False, attention=attention, pretrain=False, light=1)
+        model = LighterUNet(n_channels=3, n_classes=3, bilinear=False, attention=attention, pretrain=False, light=light)
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
     
@@ -25,100 +38,66 @@ def load_model(checkpoint_path, device, model_type='unet', attention=True):
     model.eval()
     return model
 
-def convert_incomplete_to_predicted(data_dir, subset, checkpoint_path, output_dir, device, 
-                                    batch_size=32, num_workers=4, model_type='unet', attention=True):
-    # data_dir should be the base folder containing subfolders (e.g., 'train' and 'test')
-    subset_dir = os.path.join(data_dir, subset)
+def merge_cv_predictions(predictions_dir, output_dir):
+    """
+    Merge predictions from all cross-validation folds into one directory
     
-    # Instantiate the dataset
-    is_train = True if subset.lower() == 'train' else False
-    dataset = SinogramDataset(subset_dir, is_train=is_train, transform=None, test=False)
-    
-    # Create a DataLoader with the specified batch size
-    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, 
-                            num_workers=num_workers, pin_memory=True)
-    
-    # Ensure output directory exists
+    Args:
+        predictions_dir: Base directory containing fold prediction directories
+        output_dir: Directory to save merged predictions
+    """
+    # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Load the model
-    model = load_model(checkpoint_path, device, model_type, attention)
+    # Find all fold prediction directories
+    fold_dirs = sorted(glob.glob(os.path.join(predictions_dir, "fold_*")))
     
-    # Process batches
-    print(f"Converting incomplete sinograms to predicted complete sinograms using batch size {batch_size}...")
+    if not fold_dirs:
+        raise ValueError(f"No fold prediction directories found in {predictions_dir}")
     
-    batch_idx = 0
-    with torch.no_grad(), torch.cuda.amp.autocast():  # Use mixed precision for faster inference
-        for incomplete_batch, _ in tqdm(data_loader, desc="Processing batches"):
-            # Move batch to device
-            incomplete_batch = incomplete_batch.to(device, non_blocking=True)
-            
-            # Get model predictions
-            outputs = model(incomplete_batch)
-            
-            # Process each sample in the batch
-            for i in range(outputs.shape[0]):
-                # Get the corresponding file index
-                idx = batch_idx * batch_size + i
-                if idx >= len(dataset.pairs):
-                    break  # In case the last batch is not full
-                
-                # Get file identification
-                data_i, data_j = dataset.pairs[idx]
-                
-                # Extract the predicted complete image (middle channel)
-                predicted_complete = outputs[i, 1].cpu().numpy()
-                
-                # Save the predicted image
-                output_path = os.path.join(output_dir, f"incomplete_{data_i}_{data_j}.npy")
-                np.save(output_path, predicted_complete)
-            
-            # Increment batch index
-            batch_idx += 1
-            
-            # Optional: Clear cache periodically to avoid memory issues
-            if batch_idx % 10 == 0:
-                torch.cuda.empty_cache()
+    print(f"Found {len(fold_dirs)} fold prediction directories")
     
-    print(f"Conversion complete. Predicted images are saved in {output_dir}")
+    # Keep track of which files we've already processed
+    processed_files = set()
+    
+    # Process each fold directory
+    for fold_dir in fold_dirs:
+        print(f"Processing {fold_dir}...")
+        
+        # Find all prediction files in this fold
+        prediction_files = glob.glob(os.path.join(fold_dir, "incomplete_*.npy"))
+        
+        for file_path in tqdm(prediction_files, desc=f"Processing {os.path.basename(fold_dir)}"):
+            file_name = os.path.basename(file_path)
+            
+            # Skip if we've already processed this file
+            if file_name in processed_files:
+                continue
+            
+            # Load prediction
+            prediction = np.load(file_path)
+            
+            # Save to output directory
+            output_path = os.path.join(output_dir, file_name)
+            np.save(output_path, prediction)
+            
+            # Mark as processed
+            processed_files.add(file_name)
+    
+    print(f"Merged {len(processed_files)} unique predictions into {output_dir}")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert all incomplete sinogram images into predicted complete images."
+        description="Merge predictions from cross-validation folds"
     )
-    parser.add_argument('--data_dir', type=str, required=True,
-                        help="Path to the base data directory (should contain subfolders like 'train' and 'test').")
-    parser.add_argument('--subset', type=str, default='test', choices=['train', 'test'],
-                        help="Which subset to process ('train' or 'test').")
-    parser.add_argument('--checkpoint', type=str, required=True,
-                        help="Path to the trained model checkpoint (should include 'model_state_dict').")
+    parser.add_argument('--predictions_dir', type=str, required=True,
+                        help="Base directory containing fold prediction directories")
     parser.add_argument('--output_dir', type=str, required=True,
-                        help="Directory to save the predicted complete images.")
-    parser.add_argument('--device', type=str, default='cuda',
-                        help="Device to use (e.g., 'cuda' or 'cpu').")
-    parser.add_argument('--batch_size', type=int, default=24,
-                        help="Batch size for processing.")
-    parser.add_argument('--num_workers', type=int, default=4,
-                        help="Number of worker processes for data loading.")
-    parser.add_argument('--model_type', type=str, default='unet', choices=['unet', 'lighterunet'],
-                        help="Type of model to use.")
-    parser.add_argument('--attention', type=bool, default=True,
-                        help="Whether to use attention in the model.")
+                        help="Directory to save merged predictions")
     args = parser.parse_args()
     
-    device = args.device if torch.cuda.is_available() else 'cpu'
-    
-    convert_incomplete_to_predicted(
-        args.data_dir, 
-        args.subset, 
-        args.checkpoint, 
-        args.output_dir, 
-        device,
-        args.batch_size,
-        args.num_workers,
-        args.model_type,
-        args.attention
-    )
+    # Merge predictions
+    merge_cv_predictions(args.predictions_dir, args.output_dir)
 
 if __name__ == '__main__':
     main()
