@@ -1,0 +1,2 @@
+timestamp,run_id,data_dir,batch_size,num_epochs,learning_rate,weight_decay,attention,light_model,transformer,pretrain,mse,psnr,ssim,total_parameters,training_time_hours
+2025-03-29 10:50:55,20250329_105055,/mnt/d/fyq/sinogram/2e9div_smooth,24,30,5e-06,1e-05,True,0,False,False,40.65814764854496,14.59304878609691,0.8333402533033216,31389295,0.018469707303577
